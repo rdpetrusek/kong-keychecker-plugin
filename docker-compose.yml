@@ -1,0 +1,136 @@
+version: '2.4'
+
+networks:
+  default:
+  kong-net:
+
+services:
+  #######################################
+  # Kong plugin
+  #######################################
+  kong-plugin-builder:
+    build: .
+    image: kong-plugin-builder
+    tty: true
+    stdin_open: true
+    volumes:
+      - kong_plugins:/plugins
+    
+  #######################################
+  # Kong database migration
+  #######################################
+  kong-migration:
+    image: kong:latest
+    command: kong migrations bootstrap && kong migrations up && kong migrations finished
+    networks:
+      - kong-net
+    restart: on-failure
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: dean
+      KONG_PG_PASSWORD: petrusek
+      KONG_PG_DATABASE: kong
+    links:
+      - kong-database
+    depends_on:
+      - kong-database
+
+  #######################################
+  # Kong
+  #######################################
+  kong:
+    image: kong:latest
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: dean
+      KONG_PG_PASSWORD: petrusek
+      KONG_PG_DATABASE: kong
+      KONG_PLUGINS: bundled,key-checker
+      KONG_PLUGINSERVER_NAMES: key-checker
+      KONG_PLUGINSERVER_KEY_CHECKER_QUERY_CMD: /usr/local/bin/plugins/key-checker -dump
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_dean_LISTEN: 0.0.0.0:8001
+      KONG_LOG_LEVEL: debug
+    networks:
+      - kong-net
+      - default
+    ports:
+      - "8002:8000"
+      - "8001:8001"
+    restart: on-failure
+    depends_on:
+      - kong-plugin-builder
+    volumes:
+      - kong_plugins:/usr/local/bin/plugins
+
+  #######################################
+  # Kong database
+  #######################################
+  kong-database:
+    image: postgres:9.6-alpine
+    environment:
+      POSTGRES_DB: kong
+      POSTGRES_USER: dean
+      POSTGRES_PASSWORD: petrusek
+    networks:
+      - kong-net
+    volumes:
+      - kong_db_volume:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "dean"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+
+  #######################################
+  # Konga: Database prep used by Konga
+  #######################################
+  konga-prep:
+    image: pantsel/konga
+    command: "-c prepare -a postgres -u postgresql://dean:petrusek@kong-database:5432/konga"
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    networks:
+      - kong-net
+    restart: on-failure
+
+  #######################################
+  # Konga: Kong dashboard (UI)
+  #######################################
+  konga-ui:
+    image: pantsel/konga
+    depends_on:
+      kong-database:
+        condition: service_healthy
+      kong:
+        condition: service_started
+    environment:
+      - NODE_ENV=production
+      - TOKEN_SECRET=petrusek
+      - DB_ADAPTER=postgres
+      - DB_HOST=kong-database
+      - DB_PORT=5432
+      - DB_DATABASE=konga
+      - DB_USER=dean
+      - DB_PASSWORD=petrusek
+    networks:
+      - default
+      - kong-net
+    ports:
+      - "1337:1337"
+    volumes:
+      - konga_volume:/app/kongadata
+    restart: always
+
+
+volumes:
+  kong_db_volume:
+  kong_plugins:
+  konga_volume:
